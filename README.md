@@ -50,12 +50,18 @@ In GitHub, go to **Settings → Secrets and variables → Actions → New reposi
 
 You can configure Telegram, Discord, or both. Leave the unused secret(s) unset.
 
-### 3. Start the monitor
+### 3. Test Telegram delivery
+
+After adding both Telegram secrets, open **Actions → Arena Text leaderboard monitor → Run workflow**. Set **Send a Telegram test message before checking the leaderboard** to **true**, then run it. You should receive a message saying that Telegram notifications are connected.
+
+The test option is manual-only. Scheduled runs do not send test messages.
+
+### 4. Start the monitor
 
 1. Open the repository's **Actions** tab.
 2. Select **Arena Text leaderboard monitor**.
-3. Click **Run workflow** once.
-4. The first run creates a baseline of current models and does not send a notification by default.
+3. Click **Run workflow** once. Leave the Telegram test option off unless you want another test message.
+4. The first run creates a baseline of current models and does not send a new-model alert by default.
 5. Subsequent scheduled runs notify you when a new model name is added.
 
 The workflow runs automatically every five minutes thereafter.
