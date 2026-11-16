@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Monitor Arena's public Text Arena raw-score leaderboard for newly listed models."""
+"""Monitor Arena's officially published raw Text / Overall leaderboard snapshot."""
 from __future__ import annotations
 
 import json
@@ -9,71 +9,114 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from bs4 import BeautifulSoup
 
 LEADERBOARD_URL = "https://arena.ai/leaderboard/chat/text?scoring=raw"
+DATASET_URL = "https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset"
+DATASET_ROWS_URL = "https://datasets-server.huggingface.co/filter"
+DATASET_NAME = "lmarena-ai/leaderboard-dataset"
+DATASET_CONFIG = "text"  # Arena documents this as raw (non-style-controlled) Text ratings.
+DATASET_CATEGORY = "overall"
+PAGE_SIZE = 100
 STATE_PATH = Path("state/models.json")
-USER_AGENT = "Mozilla/5.0 (compatible; ArenaTextLeaderboardMonitor/1.0; +https://github.com/)"
+USER_AGENT = "ArenaTextLeaderboardMonitor/2.0 (+https://github.com/)"
 
 
-def parse_leaderboard(html: str) -> tuple[str | None, dict[str, dict[str, Any]]]:
-    """Extract model rows from the rendered leaderboard table.
+def _as_rank(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+        return int(number) if number.is_integer() else None
+    except (TypeError, ValueError):
+        return None
 
-    Fails closed if the page structure changes or no model rows are found, so a
-    transient/block page cannot overwrite the saved baseline with an empty list.
+
+def _as_score(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def fetch_leaderboard() -> tuple[str | None, dict[str, dict[str, Any]]]:
+    """Fetch the latest official raw Text / Overall snapshot from Hugging Face.
+
+    The dataset is published by Arena and licensed CC-BY-4.0. The dataset-viewer
+    filter endpoint is paginated; failures or unexpected responses fail closed
+    so the saved model baseline is never replaced by an empty/partial result.
     """
-    soup = BeautifulSoup(html, "html.parser")
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     models: dict[str, dict[str, Any]] = {}
+    published_dates: set[str] = set()
+    offset = 0
+    total_rows: int | None = None
 
-    for table in soup.find_all("table"):
-        rows = table.find_all("tr")
-        if not rows:
-            continue
+    while True:
+        params = {
+            "dataset": DATASET_NAME,
+            "config": DATASET_CONFIG,
+            "split": "latest",
+            "where": '"category"=\'overall\'',
+            "offset": offset,
+            "length": PAGE_SIZE,
+        }
+        response = requests.get(DATASET_ROWS_URL, params=params, headers=headers, timeout=30)
+        response.raise_for_status()
 
-        headers = [cell.get_text(" ", strip=True).lower() for cell in rows[0].find_all(["th", "td"], recursive=False)]
-        if "model" not in headers:
-            continue
-        model_index = headers.index("model")
-        rank_index = headers.index("rank") if "rank" in headers else None
-        score_index = headers.index("score") if "score" in headers else None
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise RuntimeError("Hugging Face returned an unreadable dataset response.") from exc
 
-        for row in rows[1:]:
-            cells = row.find_all(["td", "th"], recursive=False)
-            if len(cells) <= model_index:
+        if payload.get("error"):
+            raise RuntimeError(f"Hugging Face dataset service error: {payload['error']}")
+
+        page_rows = payload.get("rows")
+        if not isinstance(page_rows, list):
+            raise RuntimeError("Hugging Face response did not contain a rows list.")
+
+        if total_rows is None:
+            reported_total = payload.get("num_rows_total")
+            if not isinstance(reported_total, int) or reported_total < 1:
+                raise RuntimeError("Hugging Face did not report any rows for the raw Text / Overall leaderboard.")
+            total_rows = reported_total
+
+        for item in page_rows:
+            row = item.get("row", {}) if isinstance(item, dict) else {}
+            if str(row.get("category", "")).strip().lower() != DATASET_CATEGORY:
                 continue
-            model_cell = cells[model_index]
-            # In Arena's table the model name links to the model/provider page.
-            anchors = model_cell.find_all("a")
-            name = anchors[0].get_text(" ", strip=True) if anchors else model_cell.get_text(" ", strip=True)
-            name = " ".join(name.split())
-            if not name or name.lower() in {"model", "models"}:
+
+            name = " ".join(str(row.get("model_name") or "").split())
+            if not name:
                 continue
 
-            rank = None
-            if rank_index is not None and len(cells) > rank_index:
-                rank_text = cells[rank_index].get_text(" ", strip=True).replace(",", "")
-                try:
-                    rank = int(rank_text)
-                except ValueError:
-                    pass
+            published = str(row.get("leaderboard_publish_date") or "").strip()
+            if published:
+                published_dates.add(published)
 
-            score = None
-            if score_index is not None and len(cells) > score_index:
-                score = cells[score_index].get_text(" ", strip=True)
+            models[name] = {
+                "rank": _as_rank(row.get("rank")),
+                "score": _as_score(row.get("rating")),
+            }
 
-            models[name] = {"rank": rank, "score": score}
+        if not page_rows:
+            break
+
+        offset += len(page_rows)
+        if offset >= total_rows:
+            break
+        if offset > 20000:
+            raise RuntimeError("Hugging Face pagination exceeded the safety limit; saved state was not changed.")
 
     if not models:
         raise RuntimeError(
-            "Could not find model rows in Arena's page. The page layout may have changed; "
-            "saved state was not modified. Inspect the latest GitHub Actions log."
+            "No models were found in the official raw Text / Overall dataset. "
+            "The saved state was not modified."
         )
 
-    # The published leaderboard date is displayed near the title (e.g. Nov 11, 2026).
-    page_text = soup.get_text(" ", strip=True)
-    import re
-    match = re.search(r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}\b", page_text)
-    leaderboard_date = match.group(0) if match else None
+    leaderboard_date = max(published_dates) if published_dates else None
     return leaderboard_date, models
 
 
@@ -83,7 +126,11 @@ def send_telegram(text: str) -> None:
     if not token or not chat_id:
         raise RuntimeError("Telegram credentials are not both configured.")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    response = requests.post(url, json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True}, timeout=20)
+    response = requests.post(
+        url,
+        json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
+        timeout=20,
+    )
     response.raise_for_status()
     result = response.json()
     if not result.get("ok"):
@@ -94,7 +141,6 @@ def send_discord(text: str) -> None:
     webhook = os.environ["DISCORD_WEBHOOK_URL"].strip()
     if not webhook:
         raise RuntimeError("Discord webhook URL is not configured.")
-    # Discord message content limit is 2,000 characters.
     chunks = [text[i:i + 1900] for i in range(0, len(text), 1900)]
     for chunk in chunks:
         response = requests.post(webhook, json={"content": chunk}, timeout=20)
@@ -106,23 +152,23 @@ def format_alert(new_models: dict[str, dict[str, Any]], leaderboard_date: str | 
     if leaderboard_date:
         lines.append(f"Leaderboard data date: {leaderboard_date}")
     lines.append("")
-    for name, details in sorted(new_models.items(), key=lambda item: (item[1].get("rank") is None, item[1].get("rank") or 9999, item[0].lower())):
+    for name, details in sorted(
+        new_models.items(),
+        key=lambda item: (
+            item[1].get("rank") is None,
+            item[1].get("rank") or 9999,
+            item[0].lower(),
+        ),
+    ):
         rank = f"#{details['rank']}" if details.get("rank") is not None else "New entry"
-        score = f" — {details['score']}" if details.get("score") else ""
+        score = f" — {details['score']}" if details.get("score") is not None else ""
         lines.append(f"• {name} ({rank}){score}")
-    lines.extend(["", LEADERBOARD_URL])
+    lines.extend(["", LEADERBOARD_URL, f"Dataset: {DATASET_URL}"])
     return "\n".join(lines)
 
 
 def main() -> int:
-    response = requests.get(
-        LEADERBOARD_URL,
-        headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"},
-        timeout=30,
-    )
-    response.raise_for_status()
-
-    leaderboard_date, current_models = parse_leaderboard(response.text)
+    leaderboard_date, current_models = fetch_leaderboard()
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     if STATE_PATH.exists():
@@ -152,7 +198,7 @@ def main() -> int:
             try:
                 send_telegram(message)
                 print("Telegram notification sent.")
-            except Exception as exc:  # do not mark models as seen if delivery failed
+            except Exception as exc:
                 errors.append(f"Telegram: {exc}")
         if discord_enabled:
             try:
@@ -163,10 +209,8 @@ def main() -> int:
         if errors:
             raise RuntimeError("Notification delivery failed; leaving state unchanged. " + "; ".join(errors))
     else:
-        print(f"No new models. Current Text Arena raw leaderboard contains {len(current_models)} models.")
+        print(f"No new models. Current raw Text / Overall leaderboard contains {len(current_models)} models.")
 
-    # Keep only the set of seen names. Persisting scores or ranks would create
-    # noisy commits whenever Arena refreshes model statistics without adding a model.
     state = {"models": {name: True for name in current_models}}
     STATE_PATH.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     if new_models:
