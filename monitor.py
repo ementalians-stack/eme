@@ -2,23 +2,24 @@
 """Monitor Arena's officially published raw Text / Overall leaderboard snapshot."""
 from __future__ import annotations
 
+import io
 import json
 import os
 import sys
 from pathlib import Path
 from typing import Any
 
+import pyarrow.parquet as pq
 import requests
 
 LEADERBOARD_URL = "https://arena.ai/leaderboard/chat/text?scoring=raw"
 DATASET_URL = "https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset"
-DATASET_ROWS_URL = "https://datasets-server.huggingface.co/filter"
-DATASET_NAME = "lmarena-ai/leaderboard-dataset"
-DATASET_CONFIG = "text"  # Arena documents this as raw (non-style-controlled) Text ratings.
-DATASET_CATEGORY = "overall"
-PAGE_SIZE = 100
+PARQUET_URL = (
+    "https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset/"
+    "resolve/main/text/latest-00000-of-00001.parquet"
+)
 STATE_PATH = Path("state/models.json")
-USER_AGENT = "ArenaTextLeaderboardMonitor/2.0 (+https://github.com/)"
+USER_AGENT = "ArenaTextLeaderboardMonitor/2.1 (+https://github.com/)"
 
 
 def _as_rank(value: Any) -> int | None:
@@ -41,74 +42,49 @@ def _as_score(value: Any) -> str | None:
 
 
 def fetch_leaderboard() -> tuple[str | None, dict[str, dict[str, Any]]]:
-    """Fetch the latest official raw Text / Overall snapshot from Hugging Face.
+    """Download Arena's small latest raw-Text Parquet snapshot and select overall rows.
 
-    The dataset is published by Arena and licensed CC-BY-4.0. The dataset-viewer
-    filter endpoint is paginated; failures or unexpected responses fail closed
-    so the saved model baseline is never replaced by an empty/partial result.
+    This avoids the dataset-viewer /filter service, which can return HTTP 500.
+    A failed download, unreadable Parquet file, unexpected schema, or empty
+    overall leaderboard fails closed so the saved baseline is never erased.
     """
-    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+    response = requests.get(
+        PARQUET_URL,
+        headers={"User-Agent": USER_AGENT, "Accept": "application/octet-stream"},
+        timeout=90,
+    )
+    response.raise_for_status()
+
+    if len(response.content) < 100:
+        raise RuntimeError("Arena's published leaderboard dataset download was unexpectedly small.")
+
+    try:
+        table = pq.read_table(
+            io.BytesIO(response.content),
+            columns=["model_name", "rank", "rating", "category", "leaderboard_publish_date"],
+        )
+    except Exception as exc:
+        raise RuntimeError("Could not read Arena's published Parquet dataset or its expected columns.") from exc
+
     models: dict[str, dict[str, Any]] = {}
     published_dates: set[str] = set()
-    offset = 0
-    total_rows: int | None = None
 
-    while True:
-        params = {
-            "dataset": DATASET_NAME,
-            "config": DATASET_CONFIG,
-            "split": "latest",
-            "where": '"category"=\'overall\'',
-            "offset": offset,
-            "length": PAGE_SIZE,
+    for row in table.to_pylist():
+        if str(row.get("category", "")).strip().lower() != "overall":
+            continue
+
+        name = " ".join(str(row.get("model_name") or "").split())
+        if not name:
+            continue
+
+        published = str(row.get("leaderboard_publish_date") or "").strip()
+        if published:
+            published_dates.add(published)
+
+        models[name] = {
+            "rank": _as_rank(row.get("rank")),
+            "score": _as_score(row.get("rating")),
         }
-        response = requests.get(DATASET_ROWS_URL, params=params, headers=headers, timeout=30)
-        response.raise_for_status()
-
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise RuntimeError("Hugging Face returned an unreadable dataset response.") from exc
-
-        if payload.get("error"):
-            raise RuntimeError(f"Hugging Face dataset service error: {payload['error']}")
-
-        page_rows = payload.get("rows")
-        if not isinstance(page_rows, list):
-            raise RuntimeError("Hugging Face response did not contain a rows list.")
-
-        if total_rows is None:
-            reported_total = payload.get("num_rows_total")
-            if not isinstance(reported_total, int) or reported_total < 1:
-                raise RuntimeError("Hugging Face did not report any rows for the raw Text / Overall leaderboard.")
-            total_rows = reported_total
-
-        for item in page_rows:
-            row = item.get("row", {}) if isinstance(item, dict) else {}
-            if str(row.get("category", "")).strip().lower() != DATASET_CATEGORY:
-                continue
-
-            name = " ".join(str(row.get("model_name") or "").split())
-            if not name:
-                continue
-
-            published = str(row.get("leaderboard_publish_date") or "").strip()
-            if published:
-                published_dates.add(published)
-
-            models[name] = {
-                "rank": _as_rank(row.get("rank")),
-                "score": _as_score(row.get("rating")),
-            }
-
-        if not page_rows:
-            break
-
-        offset += len(page_rows)
-        if offset >= total_rows:
-            break
-        if offset > 20000:
-            raise RuntimeError("Hugging Face pagination exceeded the safety limit; saved state was not changed.")
 
     if not models:
         raise RuntimeError(
