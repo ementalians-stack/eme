@@ -5,12 +5,12 @@ A GitHub Actions monitor for new models on Arena's **Text / Overall / raw-score*
 - Official leaderboard: <https://arena.ai/leaderboard/chat/text?scoring=raw>
 - Official published dataset: <https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset>
 
-The monitor reads Arena's openly published Hugging Face dataset rather than scraping the live Arena webpage. It checks hourly and sends a Telegram message, a Discord message, or both when a previously unseen model appears. Your computer does not need to be on.
+The monitor downloads Arena's small, officially published Parquet snapshot and selects the `overall` rows locally. It does not scrape the live Arena webpage or depend on the dataset-viewer filter API. It checks hourly and sends a Telegram message, a Discord message, or both when a previously unseen model appears. Your computer does not need to be on.
 
 ## What it does and does not do
 
 - Tracks the **Text Arena / Overall / raw-score** leaderboard.
-- Uses the dataset's `text` configuration, which Arena documents as raw (non-style-controlled) Text ratings, filtered to the `overall` category.
+- Uses the dataset's `text` subset, which Arena documents as raw (non-style-controlled) Text ratings, filtered to the `overall` category.
 - Alerts only on **new model names**; rank and score changes do not create alerts.
 - The first run saves a baseline and does not spam you with all existing models.
 - The state is kept in `state/models.json` in this repository.
@@ -81,7 +81,7 @@ to `true`, commit the change, and run the workflow manually. This can send a lon
 ## Troubleshooting
 
 - Check **Actions → latest run → Check Arena Text raw leaderboard dataset** for errors.
-- If the published dataset is temporarily unavailable or its schema changes, the job fails visibly and retains the existing state.
+- If the published Parquet file is temporarily unavailable or its schema changes, the job fails visibly and retains the existing state.
 - GitHub may delay scheduled workflows during high-load periods; the hourly cron is a polling target, not a guaranteed delivery time.
 - Public repositories can have scheduled workflows disabled after 60 days without repository activity. Re-enable them in Actions if that happens.
 
