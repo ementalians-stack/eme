@@ -101,5 +101,6 @@ jobs:
           git add state/models.json
           if ! git diff --cached --quiet; then
             git commit -m "Update Arena Text leaderboard baseline [skip ci]"
-            git push
+            git pull --rebase origin main
+            git push origin HEAD:main
           fi
