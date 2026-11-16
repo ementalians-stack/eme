@@ -1,10 +1,15 @@
-
 name: Arena Text leaderboard monitor
 
 on:
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
+    inputs:
+      send_test_notification:
+        description: "Send a Telegram test message before checking the leaderboard"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -29,6 +34,50 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt
+
+      - name: Send Telegram test notification
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.send_test_notification }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+          chat_id = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+          if not token or not chat_id:
+              raise SystemExit(
+                  "Telegram test needs TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID "
+                  "in Settings > Secrets and variables > Actions."
+              )
+
+          payload = json.dumps({
+              "chat_id": chat_id,
+              "text": "✅ Arena Text tracker: Telegram notifications are connected.",
+              "disable_web_page_preview": True,
+          }).encode("utf-8")
+          request = urllib.request.Request(
+              f"https://api.telegram.org/bot{token}/sendMessage",
+              data=payload,
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  result = json.loads(response.read().decode("utf-8"))
+          except urllib.error.HTTPError as exc:
+              raise SystemExit(f"Telegram test failed with HTTP {exc.code}. Check the bot token and chat ID.") from None
+          except Exception:
+              raise SystemExit("Telegram test failed due to a connection error.") from None
+
+          if not result.get("ok"):
+              raise SystemExit("Telegram rejected the test message. Check the bot token and chat ID.")
+          print("Telegram test notification sent successfully.")
+          PY
 
       - name: Check Arena Text raw leaderboard
         run: python monitor.py
