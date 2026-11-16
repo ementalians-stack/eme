@@ -15,6 +15,7 @@ The monitor downloads Arena's small, officially published Parquet snapshot and s
 - The first run saves a baseline and does not spam you with all existing models.
 - The state is kept in `state/models.json` in this repository.
 - Arena updates the public dataset on days when it publishes leaderboard updates. The hourly check detects updates after they appear in that dataset; this is not a live feed and cannot alert before Arena publishes the data.
+- The monitor also runs automatically when its code, dependencies, or workflow file are updated on the `main` branch.
 - The public dataset is licensed CC-BY-4.0. Alerts link to both the official leaderboard and dataset.
 
 ## Deploy it (free on a public GitHub repository)
@@ -26,7 +27,7 @@ The monitor downloads Arena's small, officially published Parquet snapshot and s
 3. In the repository, open **Settings → Actions → General → Workflow permissions** and select **Read and write permissions**. Save.
 4. Open the **Actions** tab and enable workflows if GitHub prompts you.
 
-Public repositories can use standard GitHub-hosted runners without charge. Private repository usage may count against included minutes.
+Public repositories can use standard GitHub-hosted runners without charge. GitHub's schedule minimum is five minutes. Private repository usage may count against included minutes.
 
 ### 2. Choose Telegram, Discord, or both
 
