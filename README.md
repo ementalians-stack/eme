@@ -5,7 +5,7 @@ A GitHub Actions monitor for new models on Arena's **Text / Overall / raw-score*
 - Official leaderboard: <https://arena.ai/leaderboard/chat/text?scoring=raw>
 - Official published dataset: <https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset>
 
-The monitor downloads Arena's small, officially published Parquet snapshot and selects the `overall` rows locally. It does not scrape the live Arena webpage or depend on the dataset-viewer filter API. It checks hourly and sends a Telegram message, a Discord message, or both when a previously unseen model appears. Your computer does not need to be on.
+The monitor downloads Arena's small, officially published Parquet snapshot and selects the `overall` rows locally. It does not scrape the live Arena webpage or depend on the dataset-viewer filter API. It checks every five minutes and sends a Telegram message, a Discord message, or both when a previously unseen model appears. Your computer does not need to be on.
 
 ## What it does and does not do
 
@@ -14,7 +14,7 @@ The monitor downloads Arena's small, officially published Parquet snapshot and s
 - Alerts only on **new model names**; rank and score changes do not create alerts.
 - The first run saves a baseline and does not spam you with all existing models.
 - The state is kept in `state/models.json` in this repository.
-- Arena updates the public dataset on days when it publishes leaderboard updates. The hourly check detects updates after they appear in that dataset; this is not a live feed and cannot alert before Arena publishes the data.
+- Arena updates the public dataset on days when it publishes leaderboard updates. The five-minute check detects updates after they appear in that dataset; this is not a live feed and cannot alert before Arena publishes the data.
 - The monitor also runs automatically when its code, dependencies, or workflow file are updated on the `main` branch.
 - The public dataset is licensed CC-BY-4.0. Alerts link to both the official leaderboard and dataset.
 
@@ -65,9 +65,13 @@ The test option is manual-only. Scheduled runs do not send test messages.
 2. Select **Arena Text leaderboard monitor**.
 3. Click **Run workflow** once. Leave the Telegram test option off unless you want another test message.
 4. The first successful run creates a baseline of current models and does not send a new-model alert by default.
-5. Subsequent hourly checks notify you when a new model appears in Arena's published raw Text / Overall dataset.
+5. Subsequent checks run every five minutes and notify you when a new model appears in Arena's published raw Text / Overall dataset.
 
-The workflow checks once an hour. Alerts depend on when Arena publishes a new dataset snapshot.
+Alerts depend on when Arena publishes a new dataset snapshot, so checking every five minutes does not mean Arena publishes new data every five minutes.
+
+## Automatic repository activity refresh
+
+The separate **Keep repository active** workflow adds a small dated commit on the 1st and 15th of each month. This provides regular repository activity so the scheduled monitoring workflows are less likely to be disabled by GitHub's 60-day inactivity policy. You do not need to do this manually.
 
 ## Optional: notify about all current models on first run
 
@@ -83,8 +87,8 @@ to `true`, commit the change, and run the workflow manually. This can send a lon
 
 - Check **Actions → latest run → Check Arena Text raw leaderboard dataset** for errors.
 - If the published Parquet file is temporarily unavailable or its schema changes, the job fails visibly and retains the existing state.
-- GitHub may delay scheduled workflows during high-load periods; the hourly cron is a polling target, not a guaranteed delivery time.
-- Public repositories can have scheduled workflows disabled after 60 days without repository activity. Re-enable them in Actions if that happens.
+- GitHub may delay scheduled workflows during high-load periods; the five-minute cron is a polling target, not a guaranteed delivery time.
+- Public repositories can have scheduled workflows disabled after 60 days without repository activity. The keep-alive workflow adds regular commits, but check the Actions tab occasionally to make sure both workflows remain enabled.
 
 ## Data and security
 
