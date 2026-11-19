@@ -172,7 +172,7 @@ def format_alert(
 
         config = LEADERBOARDS[variant]
         metadata = leaderboard_metadata[variant]
-        lines.extend(["", f"**{config['label']}**"])
+        lines.extend(["", config["label"]])
         if metadata.get("publish_date"):
             lines.append(f"Arena dataset publication date: {metadata['publish_date']} (date only)")
         lines.append(
