@@ -1,4 +1,4 @@
-name: Arena Text leaderboard monitor
+name: Arena Text raw and style-control leaderboard monitor
 
 on:
   push:
@@ -86,7 +86,7 @@ jobs:
           print("Telegram test notification sent successfully.")
           PY
 
-      - name: Check Arena Text raw leaderboard dataset
+      - name: Check Arena Text Overall datasets (style control off and on)
         run: python monitor.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
