@@ -6,6 +6,7 @@ import io
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,18 @@ PARQUET_URL = (
     "resolve/main/text/latest-00000-of-00001.parquet"
 )
 STATE_PATH = Path("state/models.json")
-USER_AGENT = "ArenaTextLeaderboardMonitor/2.1 (+https://github.com/)"
+ALERT_LOG_PATH = Path("state/alerts.jsonl")
+USER_AGENT = "ArenaTextLeaderboardMonitor/2.2 (+https://github.com/)"
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _utc_iso(value: datetime | None = None) -> str:
+    """Return a timezone-aware UTC timestamp in an unambiguous ISO-8601 format."""
+    stamp = value or _utc_now()
+    return stamp.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _as_rank(value: Any) -> int | None:
@@ -41,12 +53,13 @@ def _as_score(value: Any) -> str | None:
         return str(value)
 
 
-def fetch_leaderboard() -> tuple[str | None, dict[str, dict[str, Any]]]:
-    """Download Arena's small latest raw-Text Parquet snapshot and select overall rows.
+def fetch_leaderboard() -> tuple[str | None, dict[str, dict[str, Any]], str]:
+    """Download Arena's raw-Text snapshot and return its date, models, and fetch time.
 
-    This avoids the dataset-viewer /filter service, which can return HTTP 500.
-    A failed download, unreadable Parquet file, unexpected schema, or empty
-    overall leaderboard fails closed so the saved baseline is never erased.
+    Arena currently supplies a publication DATE, not a publication timestamp.
+    snapshot_fetched_at is therefore the first time this monitor can prove the
+    model was present in the downloaded dataset; it is not the exact site
+    publication time.
     """
     response = requests.get(
         PARQUET_URL,
@@ -54,6 +67,7 @@ def fetch_leaderboard() -> tuple[str | None, dict[str, dict[str, Any]]]:
         timeout=90,
     )
     response.raise_for_status()
+    snapshot_fetched_at = _utc_iso()
 
     if len(response.content) < 100:
         raise RuntimeError("Arena's published leaderboard dataset download was unexpectedly small.")
@@ -89,14 +103,15 @@ def fetch_leaderboard() -> tuple[str | None, dict[str, dict[str, Any]]]:
     if not models:
         raise RuntimeError(
             "No models were found in the official raw Text / Overall dataset. "
-            "The saved state was not modified."
+            "The saved baseline was not modified."
         )
 
     leaderboard_date = max(published_dates) if published_dates else None
-    return leaderboard_date, models
+    return leaderboard_date, models, snapshot_fetched_at
 
 
-def send_telegram(text: str) -> None:
+def send_telegram(text: str) -> str:
+    """Send an alert and return Telegram's server-reported message timestamp."""
     token = os.environ["TELEGRAM_BOT_TOKEN"].strip()
     chat_id = os.environ["TELEGRAM_CHAT_ID"].strip()
     if not token or not chat_id:
@@ -112,6 +127,15 @@ def send_telegram(text: str) -> None:
     if not result.get("ok"):
         raise RuntimeError(f"Telegram API rejected the message: {result}")
 
+    # Telegram includes the message's server-side Unix timestamp (seconds).
+    message_date = result.get("result", {}).get("date")
+    if isinstance(message_date, (int, float)):
+        return _utc_iso(datetime.fromtimestamp(message_date, tz=timezone.utc))
+
+    # Defensive fallback for an unexpected API response: record the time
+    # immediately after the successful response was received.
+    return _utc_iso()
+
 
 def send_discord(text: str) -> None:
     webhook = os.environ["DISCORD_WEBHOOK_URL"].strip()
@@ -123,10 +147,15 @@ def send_discord(text: str) -> None:
         response.raise_for_status()
 
 
-def format_alert(new_models: dict[str, dict[str, Any]], leaderboard_date: str | None) -> str:
+def format_alert(
+    new_models: dict[str, dict[str, Any]],
+    leaderboard_date: str | None,
+    first_seen_at_utc: str,
+) -> str:
     lines = ["🆕 New model(s) detected on Arena Text Arena (raw score)"]
     if leaderboard_date:
-        lines.append(f"Leaderboard data date: {leaderboard_date}")
+        lines.append(f"Arena dataset publication date: {leaderboard_date} (date only; no publication time is provided)")
+    lines.append(f"First seen in downloaded dataset (UTC): {first_seen_at_utc}")
     lines.append("")
     for name, details in sorted(
         new_models.items(),
@@ -143,8 +172,18 @@ def format_alert(new_models: dict[str, dict[str, Any]], leaderboard_date: str | 
     return "\n".join(lines)
 
 
+def append_alert_log(record: dict[str, Any]) -> None:
+    """Append one JSONL audit record for a successfully handled new-model alert."""
+    ALERT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with ALERT_LOG_PATH.open("a", encoding="utf-8") as log_file:
+        log_file.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+
+
 def main() -> int:
-    leaderboard_date, current_models = fetch_leaderboard()
+    # This is the monitor process start time, i.e. when the GitHub job begins
+    # executing the check script (not the exact moment the runner was allocated).
+    check_started_at_utc = _utc_iso()
+    leaderboard_date, current_models, snapshot_fetched_at_utc = fetch_leaderboard()
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     if STATE_PATH.exists():
@@ -168,22 +207,49 @@ def main() -> int:
     if first_run:
         print(f"First run: establishing a baseline of {len(current_models)} models; no alert sent by default.")
     elif new_models:
-        message = format_alert(new_models, leaderboard_date)
+        message = format_alert(new_models, leaderboard_date, snapshot_fetched_at_utc)
         errors: list[str] = []
+        telegram_sent_at_utc: str | None = None
+        discord_sent_at_utc: str | None = None
+
         if telegram_enabled:
             try:
-                send_telegram(message)
-                print("Telegram notification sent.")
+                telegram_sent_at_utc = send_telegram(message)
+                print(f"Telegram notification accepted by Telegram at {telegram_sent_at_utc}.")
             except Exception as exc:
                 errors.append(f"Telegram: {exc}")
         if discord_enabled:
             try:
                 send_discord(message)
-                print("Discord notification sent.")
+                discord_sent_at_utc = _utc_iso()
+                print(f"Discord notification request completed at {discord_sent_at_utc}.")
             except Exception as exc:
                 errors.append(f"Discord: {exc}")
         if errors:
             raise RuntimeError("Notification delivery failed; leaving state unchanged. " + "; ".join(errors))
+
+        record = {
+            "recorded_at_utc": _utc_iso(),
+            "github_check_started_at_utc": check_started_at_utc,
+            "snapshot_first_observed_at_utc": snapshot_fetched_at_utc,
+            "arena_leaderboard_publish_date": leaderboard_date,
+            "telegram_sent_at_utc": telegram_sent_at_utc,
+            "discord_request_completed_at_utc": discord_sent_at_utc,
+            "github_run_id": os.getenv("GITHUB_RUN_ID") or None,
+            "github_run_url": (
+                f"{os.getenv('GITHUB_SERVER_URL', 'https://github.com')}/"
+                f"{os.getenv('GITHUB_REPOSITORY', '')}/actions/runs/{os.getenv('GITHUB_RUN_ID', '')}"
+                if os.getenv("GITHUB_RUN_ID") and os.getenv("GITHUB_REPOSITORY")
+                else None
+            ),
+            "new_models": new_models,
+            "timing_note": (
+                "Arena supplies a publication date but no exact publication timestamp. "
+                "snapshot_first_observed_at_utc is when this check first downloaded a snapshot containing the model."
+            ),
+        }
+        append_alert_log(record)
+        print("Alert timing record appended to state/alerts.jsonl.")
     else:
         print(f"No new models. Current raw Text / Overall leaderboard contains {len(current_models)} models.")
 
