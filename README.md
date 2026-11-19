@@ -20,7 +20,7 @@ The monitor downloads Arena's small, officially published Parquet snapshot and s
 
 ## Alert timing and audit history
 
-For each successfully handled new-model alert, the monitor appends one record to `state/alerts.jsonl`. Each record includes:
+For each successfully handled new-model alert, the monitor appends one record to [`state/alerts.jsonl`](state/alerts.jsonl). Each record includes:
 
 - `github_check_started_at_utc`: when the monitor script started its GitHub Actions check.
 - `snapshot_first_observed_at_utc`: when the check had downloaded Arena's dataset snapshot containing the new model. This is the first time our monitor can prove the model was present.
