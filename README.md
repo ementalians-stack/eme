@@ -13,10 +13,25 @@ The monitor downloads Arena's small, officially published Parquet snapshot and s
 - Uses the dataset's `text` subset, which Arena documents as raw (non-style-controlled) Text ratings, filtered to the `overall` category.
 - Alerts only on **new model names**; rank and score changes do not create alerts.
 - The first run saves a baseline and does not spam you with all existing models.
-- The state is kept in `state/models.json` in this repository.
+- The model baseline is kept in `state/models.json` in this repository.
 - Arena updates the public dataset on days when it publishes leaderboard updates. The five-minute check detects updates after they appear in that dataset; this is not a live feed and cannot alert before Arena publishes the data.
 - The monitor also runs automatically when its code, dependencies, or workflow file are updated on the `main` branch.
 - The public dataset is licensed CC-BY-4.0. Alerts link to both the official leaderboard and dataset.
+
+## Alert timing and audit history
+
+For each successfully handled new-model alert, the monitor appends one record to `state/alerts.jsonl`. Each record includes:
+
+- `github_check_started_at_utc`: when the monitor script started its GitHub Actions check.
+- `snapshot_first_observed_at_utc`: when the check had downloaded Arena's dataset snapshot containing the new model. This is the first time our monitor can prove the model was present.
+- `arena_leaderboard_publish_date`: the publication date supplied by Arena's dataset.
+- `telegram_sent_at_utc`: the message timestamp returned by Telegram's API after it accepted the alert.
+- `github_run_id` and `github_run_url`: the corresponding GitHub Actions run.
+- `new_models`: model names, ranks, and scores included in that alert.
+
+**Important timing limitation:** Arena's dataset currently supplies a publication date, not an exact publication time. The tracker therefore cannot prove the exact minute the model first appeared on Arena's website. `snapshot_first_observed_at_utc` is the first successful check that downloaded a snapshot containing it. The Telegram timestamp is returned by Telegram's server and is recorded to the nearest second.
+
+All timestamps use UTC to make comparisons reliable across time zones. The JSONL log is committed to the public repository alongside the model baseline; it contains public leaderboard data and timestamps, never Telegram credentials or chat IDs.
 
 ## Deploy it (free on a public GitHub repository)
 
@@ -92,6 +107,6 @@ to `true`, commit the change, and run the workflow manually. This can send a lon
 
 ## Data and security
 
-The BotFather token and Discord webhook belong in GitHub Actions secrets, never in source files. The tracked state file contains public model names, ranks, and displayed scores only.
+The BotFather token and Discord webhook belong in GitHub Actions secrets, never in source files. The tracked state file contains public model names, ranks, and displayed scores only. The alert timing log contains timestamps and public model information only.
 
 Dataset attribution: Arena Team, [Arena Leaderboard Dataset](https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset), licensed under CC-BY-4.0.
