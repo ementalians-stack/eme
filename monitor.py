@@ -87,9 +87,9 @@ def fetch_leaderboard(variant: str) -> tuple[str | None, dict[str, dict[str, Any
         )
 
     try:
-        table = pq.read_table(
-            io.BytesIO(response.content),
+        table = pq.ParquetFile(io.BytesIO(response.content)).read(
             columns=["model_name", "rank", "rating", "category", "leaderboard_publish_date"],
+            use_threads=False,
         )
     except Exception as exc:
         raise RuntimeError(
