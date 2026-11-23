@@ -21,8 +21,8 @@ BRANCH = "main"
 def main() -> int:
     token = os.environ.get("GITHUB_ACTIONS_TOKEN", "").strip()
     if not token:
-        print("Missing GITHUB_ACTIONS_TOKEN environment variable.", file=sys.stderr)
-        return 2
+        print("Waiting for GITHUB_ACTIONS_TOKEN to be configured; no workflow was triggered.")
+        return 0
 
     url = (
         f"https://api.github.com/repos/{OWNER}/{REPOSITORY}"
